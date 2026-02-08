@@ -4,7 +4,7 @@ title: "System Design"
 nav_order: 2
 ---
 
-# System Design: Codebase Knowledge Builder
+# System Design: Code-IQ
 
 > Please DON'T remove notes for AI
 

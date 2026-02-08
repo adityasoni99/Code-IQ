@@ -1,5 +1,5 @@
 """
-PocketFlow nodes for the Codebase Knowledge Builder pipeline.
+PocketFlow nodes for the Code-IQ pipeline.
 """
 
 import json

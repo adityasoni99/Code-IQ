@@ -1,4 +1,4 @@
-# Task List: Codebase Knowledge Builder (MVP)
+# Task List: Code-IQ (MVP)
 
 Generated from [docs/design.md](../docs/design.md) and [.cursor/plans/prd_codebase_knowledge_builder_2dfde023.plan.md](../.cursor/plans/prd_codebase_knowledge_builder_2dfde023.plan.md).
 

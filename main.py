@@ -1,5 +1,5 @@
 """
-Codebase Knowledge Builder — CLI entrypoint.
+Code-IQ — CLI entrypoint.
 
 Runs the pipeline flow with shared store initialized from defaults and CLI args.
 """

@@ -1,5 +1,5 @@
 """
-Shared store schema and defaults for the Codebase Knowledge Builder pipeline.
+Shared store schema and defaults for the Code-IQ pipeline.
 
 Keys used by nodes (see docs/design.md § Node Design / Shared Store):
 

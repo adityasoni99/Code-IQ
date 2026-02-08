@@ -1,6 +1,6 @@
 # Post-MVP Plan: API, UI Scope, and Frontend Tech
 
-This document plans post-MVP work for the Codebase Knowledge Builder: **API contract** (sync vs async, webhooks), **UI scope** (upload vs link, view-only vs edit), and **frontend technology** (Streamlit vs NextJS + Tailwind CSS), aligned with [docs/design.md](design.md), the PRD, and [.cursor/skills/frontend-design/SKILL.md](../.cursor/skills/frontend-design/SKILL.md).
+This document plans post-MVP work for the Code-IQ: **API contract** (sync vs async, webhooks), **UI scope** (upload vs link, view-only vs edit), and **frontend technology** (Streamlit vs NextJS + Tailwind CSS), aligned with [docs/design.md](design.md), the PRD, and [.cursor/skills/frontend-design/SKILL.md](../.cursor/skills/frontend-design/SKILL.md).
 
 ---
 

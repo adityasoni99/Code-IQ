@@ -30,8 +30,7 @@ build/
 ehthumbs.db
 Thumbs.db
 
-# Project specific
-out/
+# Project specific  
 output/
 temp/
 tmp/

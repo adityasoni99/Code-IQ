@@ -1,5 +1,5 @@
 """
-Streamlit UI for Codebase Knowledge Builder (post-MVP Phase 1).
+Streamlit UI for Code-IQ (post-MVP Phase 1).
 
 Uses async API: POST /v1/jobs (link) or POST /v1/jobs/upload (zip), poll GET /v1/jobs/{id}, download via GET /v1/jobs/{id}/result.
 Run API first: uvicorn api.app:app --reload
@@ -121,8 +121,8 @@ def _poll_and_show_result(job_id: str) -> None:
 
 
 def main():
-    st.set_page_config(page_title="Codebase Knowledge Builder", page_icon="📚", layout="wide")
-    st.title("Codebase Knowledge Builder")
+    st.set_page_config(page_title="Code-IQ", page_icon="📚", layout="wide")
+    st.title("Code-IQ")
     st.caption("Generate a structured tutorial from a GitHub repo (link) or upload a zip. Uses async API.")
 
     # Edit screen (if project loaded)

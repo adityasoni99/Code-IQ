@@ -1,5 +1,5 @@
 """
-PocketFlow flow for the Codebase Knowledge Builder pipeline.
+PocketFlow flow for the Code-IQ pipeline.
 """
 
 from pocketflow import Flow

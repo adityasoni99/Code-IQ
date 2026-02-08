@@ -1,4 +1,4 @@
-# Codebase Knowledge Builder
+# Code-IQ
 
 Generate a structured tutorial (index, chapters, Mermaid diagram) from a GitHub repo or local directory. See [docs/design.md](docs/design.md) for flow and node design.
 

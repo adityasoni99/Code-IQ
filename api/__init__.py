@@ -1,1 +1,1 @@
-"""API layer for Codebase Knowledge Builder (post-MVP)."""
+"""API layer for Code-IQ (post-MVP)."""

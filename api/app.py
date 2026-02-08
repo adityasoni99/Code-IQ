@@ -1,5 +1,5 @@
 """
-FastAPI application for Codebase Knowledge Builder (post-MVP API).
+FastAPI application for Code-IQ (post-MVP API).
 
 Run with: uvicorn api.app:app --reload
 """
@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from api.routes.v1 import router as v1_router
 
 app = FastAPI(
-    title="Codebase Knowledge Builder API",
+    title="Code-IQ API",
     description="Generate structured tutorials from GitHub repos or uploaded code.",
     version="0.2.0",
 )

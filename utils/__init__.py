@@ -1,1 +1,1 @@
-"""Utilities for Codebase Knowledge Builder."""
+"""Utilities for Code-IQ."""

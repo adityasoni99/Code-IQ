@@ -1,4 +1,4 @@
-# Codebase Knowledge Builder — UI (Streamlit)
+# Code-IQ — UI (Streamlit)
 
 Phase 1: **link** (GitHub URL) or **upload** (zip), view-only result (summary + download zip). Uses the **async API** (POST /v1/jobs or POST /v1/jobs/upload, poll GET /v1/jobs/{id}). Max upload **50 MB**.
 
