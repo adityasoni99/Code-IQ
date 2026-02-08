@@ -13,7 +13,7 @@ from pocketflow import BatchNode, Node
 
 from utils.context_helpers import create_llm_context, get_content_for_indices
 
-logger = logging.getLogger("codebase_knowledge_builder")
+logger = logging.getLogger("Code_IQ")
 from utils.crawl_github_files import crawl_github_files
 from utils.crawl_local_files import crawl_local_files
 from utils.call_llm import call_llm
@@ -168,6 +168,7 @@ class FetchRepo(Node):
         use_relative = prep_res.get("use_relative_paths", True)
 
         if repo_url and str(repo_url).strip():
+            print(f"Crawling repository: {repo_url}...")
             result = crawl_github_files(
                 repo_url=str(repo_url).strip(),
                 token=prep_res.get("github_token"),
@@ -180,6 +181,7 @@ class FetchRepo(Node):
         else:
             if not local_dir or not str(local_dir).strip():
                 raise ValueError("Either repo_url or local_dir must be set in shared store")
+            print(f"Crawling local directory: {local_dir}...")
             result = crawl_local_files(
                 directory=str(local_dir).strip(),
                 max_file_size=max_size,
@@ -190,6 +192,8 @@ class FetchRepo(Node):
             files_dict = result.get("files") or {}
 
         files_list = list(files_dict.items())
+        if len(files_list) == 0:
+            raise (ValueError("Failed to fetch files"))
         return (files_list, project_name)
 
     def post(
@@ -315,11 +319,12 @@ class IdentifyAbstractions(Node):
         language = (shared.get("language") or "english").strip().lower()
         use_cache = shared.get("use_cache", True)
         max_abstraction_num = shared.get("max_abstraction_num", 10)
-        file_context = create_llm_context(files)
+
+        file_context, file_info = create_llm_context(files)
         # Build file listing for prompt
-        file_listing = "\n".join(f"- {i} # {path}" for i, (path, _) in enumerate(files))
+        file_listing = "\n".join(f"- {i} # {path}" for i, path in file_info)
         return {
-            "files": files,
+            "n_files": len(files),
             "project_name": project_name,
             "language": language,
             "file_context": file_context,
@@ -329,14 +334,14 @@ class IdentifyAbstractions(Node):
         }
 
     def exec(self, prep_res: dict) -> list[dict]:
-        files = prep_res.get("files") or []
+        n_files = prep_res.get("n_files") or 0
         project_name = prep_res.get("project_name") or "project"
         language = prep_res.get("language") or "english"
         file_context = prep_res.get("file_context") or ""
         file_listing = prep_res.get("file_listing") or ""
         use_cache = prep_res.get("use_cache", True)
         max_abstraction_num = prep_res.get("max_abstraction_num", 10)
-        n_files = len(files)
+        logger.info("Identifying abstractions using LLM...")
 
         # Add language instruction and hints only if not English
         language_instruction = ""
@@ -426,11 +431,13 @@ Format the output as a YAML list of dictionaries:
                         indices.append(idx)
                 except (ValueError, TypeError):
                     pass
-            abstractions.append({"name": str(name).strip(), "description": str(desc).strip(), "files": indices})
+            item["files"] = sorted(list(set(indices)))
+            abstractions.append({"name": str(name).strip(), "description": str(desc).strip(), "files": item["files"]})
+        logger.info("Identified %s abstractions: %s", len(abstractions), [a["name"] for a in abstractions])
         return abstractions
 
     def post(self, shared: dict, prep_res: dict, exec_res: list[dict]) -> str:
-        shared["abstractions"] = exec_res
+        shared["abstractions"] = exec_res # List of {"name": str, "description": str, "files": [int]}
         return "default"
 
 
@@ -462,7 +469,12 @@ class AnalyzeRelationships(Node):
             all_file_indices.update(abstr.get("files") or [])
         
         context_lines.append("\nRelevant File Snippets (Referenced by Index and Path):")
-        content_snippets = get_content_for_indices(files, list(all_file_indices)) if files else ""
+        relevant_files_content_map = get_content_for_indices(files, sorted(list(all_file_indices))) if files else {}
+        content_snippets = "\\n\\n".join(
+            f"--- File {key} ---\\n{content}"
+            for key, content in relevant_files_content_map.items()
+        )
+        context_lines.append(content_snippets)
         
         return {
             "abstractions": abstractions,
@@ -471,7 +483,7 @@ class AnalyzeRelationships(Node):
             "language": language,
             "use_cache": use_cache,
             "abstraction_list": "\n".join(abstraction_info_for_prompt),
-            "context": "\n".join(context_lines) + "\n" + content_snippets,
+            "context": "\n".join(context_lines),
             "num_abstractions": len(abstractions),
         }
 
@@ -483,11 +495,13 @@ class AnalyzeRelationships(Node):
         use_cache = prep_res.get("use_cache", True)
         n_abs = prep_res.get("num_abstractions", 0)
 
+        logger.info("Analyzing relationships using LLM...")
+
         # Add language instruction and hints only if not English
         language_instruction = ""
         lang_hint = ""
         list_lang_note = ""
-        if language != "english":
+        if language.lower() != "english":
             lang_cap = language.capitalize()
             language_instruction = f"IMPORTANT: Generate the `summary` and relationship `label` fields in **{lang_cap}** language. Do NOT use English for these fields.\n\n"
             lang_hint = f" (in {lang_cap})"
@@ -499,7 +513,7 @@ List of Abstraction Indices and Names{list_lang_note}:
 {abs_list}
 
 Context (Abstractions, Descriptions, Code):
-{context[:12000]}
+{context}
 
 {language_instruction}Please provide:
 1. A high-level `summary` of the project's main purpose and functionality in a few beginner-friendly sentences{lang_hint}. Use markdown formatting with **bold** and *italic* text to highlight important concepts.
@@ -541,14 +555,24 @@ Now, provide the YAML output:
         summary = data.get("summary") or data.get("Summary") or ""
         details_raw = data.get("details") or data.get("relationships") or data.get("Details") or []
         if not isinstance(details_raw, list):
+            logger.warning("LLM returned non-list for relationships details; got: %s", type(details_raw))
             details_raw = []
 
         details: list[dict] = []
         for item in details_raw:
             if not isinstance(item, dict):
+                logger.warning("Skipping invalid relationship item (not a dict): %s", item)
                 continue
-            from_ref = item.get("from_abstraction") or item.get("from") or ""
-            to_ref = item.get("to_abstraction") or item.get("to") or ""
+            from_ref = item.get("from_abstraction")
+            if from_ref is None:
+                from_ref = item.get("from")
+            if from_ref is None:
+                from_ref = ""
+            to_ref = item.get("to_abstraction")
+            if to_ref is None:
+                to_ref = item.get("to")
+            if to_ref is None:
+                to_ref = ""
             label = item.get("label") or item.get("Label") or ""
             try:
                 from_idx = _parse_index_from_ref(from_ref)
@@ -556,11 +580,18 @@ Now, provide the YAML output:
                 if 0 <= from_idx < n_abs and 0 <= to_idx < n_abs:
                     details.append({"from": from_idx, "to": to_idx, "label": str(label).strip()})
             except (ValueError, TypeError):
+                logger.warning("Skipping invalid relationship item: %s", item)
                 pass
 
-        return {"summary": str(summary).strip(), "details": details}
+        logger.info("Extracted relationships: %s", details)
+        return {
+            "summary": str(summary).strip(),
+            "details": details # Store validated, index-based relationships with potentially translated labels
+        }
 
     def post(self, shared: dict, prep_res: dict, exec_res: dict) -> str:
+        # Structure is now {"summary": str, "details": [{"from": int, "to": int, "label": str}]}
+        # Summary and label might be translated if language is not English
         shared["relationships"] = exec_res
         return "default"
 
@@ -630,8 +661,7 @@ Abstractions (Index # Name){list_lang_note}:
 Context about relationships and project summary:
 {context}
 
-If you are going to make a tutorial for `{project_name}`, what is the best order to explain these abstractions, from first to last?
-
+If you are going to make a tutorial for ```` {project_name} ````, what is the best order to explain these abstractions, from first to last?
 Ideally, first explain those that are the most important or foundational, perhaps user-facing concepts or entry points. Then move to more detailed, lower-level implementation details or supporting concepts.
 
 Output the ordered list of abstraction indices, including the name in a comment for clarity. Use the format `idx # AbstractionName`.
@@ -653,19 +683,21 @@ Now, provide the YAML output:
         if not isinstance(data, list):
             raise ValueError("LLM did not return a YAML list for chapter order")
 
-        indices: list[int] = []
+        ordered_indices: list[int] = []
         for item in data:
             try:
                 idx = _parse_index_from_ref(item)
-                if 0 <= idx < n_abs and idx not in indices:
-                    indices.append(idx)
+                if 0 <= idx < n_abs and idx not in ordered_indices:
+                    ordered_indices.append(idx)
             except (ValueError, TypeError):
+                logger.warning("Skipping invalid chapter order item: %s", item)
                 pass
 
         expected = set(range(n_abs))
-        if set(indices) != expected:
-            raise ValueError(f"Chapter order must contain each abstraction index exactly once; got {indices}, expected {sorted(expected)}")
-        return indices
+        if set(ordered_indices) != expected:
+            raise ValueError(f"Chapter order must contain each abstraction index exactly once; got {ordered_indices}, expected {sorted(expected)}")
+        logger.info("Determined chapter order: %s", ordered_indices)
+        return ordered_indices
 
     def post(self, shared: dict, prep_res: dict, exec_res: list[int]) -> str:
         shared["chapter_order"] = exec_res
@@ -715,11 +747,12 @@ class WriteChapters(BatchNode):
         items: list[dict] = []
         for i, abs_idx in enumerate(chapter_order):
             if abs_idx < 0 or abs_idx >= len(abstractions):
+                logger.warning("Skipping invalid abstraction index in write chapter: %s", abs_idx)
                 continue
-            ab = abstractions[abs_idx]
-            name = ab.get("name") or ""
-            desc = ab.get("description") or ""
-            file_indices = ab.get("files") or []
+            abstraction_details = abstractions[abs_idx]
+            name = abstraction_details.get("name") or ""
+            desc = abstraction_details.get("description") or ""
+            file_indices = abstraction_details.get("files") or []
             file_content_map: dict[str, str] = {}
             for fi in file_indices:
                 if 0 <= fi < n_files:
@@ -752,6 +785,7 @@ class WriteChapters(BatchNode):
                 "project_name": project_name,
                 "use_cache": use_cache,
             })
+        logger.info("Prepared %s chapters for writing...", len(items))
         return items
 
     def exec(self, item: dict) -> str:
@@ -765,6 +799,8 @@ class WriteChapters(BatchNode):
         project_name = item.get("project_name") or "project"
         num = item.get("chapter_number") or 1
         use_cache = item.get("use_cache", True)
+
+        logger.info("Writing chapter %s: %s", num, name)
         
         # Get summary of chapters written *before* this one
         previous_chapters_summary = "\n---\n".join(self.chapters_written_so_far)
@@ -852,6 +888,7 @@ Now, directly provide a super beginner-friendly Markdown output (DON'T need ```m
     def post(self, shared: dict, prep_res: list[dict], exec_res_list: list[str]) -> str:
         shared["chapters"] = exec_res_list
         self.chapters_written_so_far = []
+        logger.info("Written all %s chapters.", len(exec_res_list))
         return "default"
 
 
@@ -925,12 +962,14 @@ class CombineTutorial(Node):
                 chapter_content = chapters[i]
                 if not chapter_content.endswith("\n\n"):
                     chapter_content += "\n\n"
-                chapter_content += "---\n\nGenerated by [AI Codebase Knowledge Builder](https://github.com/The-Pocket/Tutorial-Codebase-Knowledge)"
+                chapter_content += "---\n\nGenerated by [Code IQ](https://github.com/adityasoni99/Code-IQ)"
                 
                 chapter_files.append({"filename": fn, "content": chapter_content})
+            else:
+                logger.warning("Warning: Mismatch between chapter order, abstractions, or content at index %s (abstraction index %s). Skipping file generation for this entry.", i, idx)
         
         # Add attribution to index content
-        index_content += "\n\n---\n\nGenerated by [AI Codebase Knowledge Builder](https://github.com/The-Pocket/Tutorial-Codebase-Knowledge)"
+        index_content += "\n\n---\n\nGenerated by [Code IQ](https://github.com/adityasoni99/Code-IQ)"
 
         return {
             "output_path": out_path,

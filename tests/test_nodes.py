@@ -144,26 +144,31 @@ def test_identify_abstractions_prep_returns_file_context():
     }
     node = IdentifyAbstractions()
     prep_res = node.prep(shared)
-    assert prep_res["file_context"] == "0 # a.py\n1 # b.py"
+    assert "--- File Index 0: a.py ---" in prep_res["file_context"]
+    assert "--- File Index 1: b.py ---" in prep_res["file_context"]
+    assert prep_res["file_listing"] == "- 0 # a.py\n- 1 # b.py"
     assert prep_res["project_name"] == "proj"
 
 
 def test_identify_abstractions_exec_parses_yaml_and_validates_indices():
     """IdentifyAbstractions.exec parses YAML and validates file indices (mock call_llm)."""
     prep_res = {
-        "files": [("a.py", "x"), ("b.py", "y")],
+        "n_files": 2,
         "project_name": "p",
         "language": "english",
-        "file_context": "0 # a.py\n1 # b.py",
+        "file_context": "content",
+        "file_listing": "- 0 # a.py\n- 1 # b.py",
+        "use_cache": True,
+        "max_abstraction_num": 10,
     }
-    yaml_response = """
+    yaml_response = """```yaml
 - name: Node
   description: A step in the pipeline.
-  files: [0, 1]
+  file_indices: [0, 1]
 - name: Flow
   description: Orchestrates nodes.
-  files: [1]
-"""
+  file_indices: [1]
+```"""
     with patch("nodes.call_llm", return_value=yaml_response):
         node = IdentifyAbstractions()
         result = node.exec(prep_res)

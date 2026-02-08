@@ -1,0 +1,25 @@
+[project]
+name = "codebase-knowledge-builder"
+version = "0.1.0"
+description = "Generate structured tutorials from a GitHub repo or local directory."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pocketflow",
+    "requests",
+    "PyYAML",
+    "google-genai",
+    "python-dotenv",
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "python-multipart",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "httpx"]
+ui = ["streamlit"]
+
+[tool.pytest.ini_options]
+pythonpath = "."
+testpaths = ["tests"]

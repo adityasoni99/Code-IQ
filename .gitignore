@@ -1,0 +1,45 @@
+# Python
+.venv/
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+*.so
+
+# IDE and Editor
+.vscode/
+.idea/
+.cursor/
+.cursorrules
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project specific
+out/
+output/
+temp/
+tmp/
+nodes.py_bkp
+
+# Logs
+*.log
+logs/
+
+# uv lock file (usually committed, but can ignore if needed)
+# uv.lock

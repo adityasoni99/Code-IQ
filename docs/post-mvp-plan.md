@@ -18,7 +18,7 @@ The pipeline (FetchRepo → IdentifyAbstractions → AnalyzeRelationships → Or
 
 **Recommendation:** Provide **both**.
 
-- **Sync:** `POST /v1/build` — same inputs as CLI (`repo_url` or `local_dir` simulation via upload, `project_name`, `language`, etc.). Return 200 + result (e.g. `final_output_dir` path or zip URL, plus summary) when complete. Enforce a **max duration** (e.g. 5 min); beyond that return 202 + `job_id` and treat as async, or reject with 413.
+- **Sync:** `POST /v1/build` — same inputs as CLI (`repo_url` or `local_dir` simulation via upload, `project_name`, `language`, etc.). Return 200 + result (e.g. `final_output_dir` path or zip URL, plus summary) when complete. Enforce a **max duration** (e.g. 5 min); beyond that return 202 + `job_id` and treat as async, or reject with 413. *Implemented: sync returns 413 when run exceeds `BUILD_TIMEOUT_SECONDS`; 202 + job_id will be available when async API (task 2.0) is in place.*
 - **Async:** `POST /v1/jobs` — same body; response `201 Created` + `{ "job_id": "...", "status": "queued" }`. `GET /v1/jobs/{job_id}` returns `{ "status": "queued"|"running"|"completed"|"failed", "created_at", "updated_at", "result" (if completed), "error" (if failed) }`. Optional `GET /v1/jobs/{job_id}/result` for artifact (e.g. zip of output) when status is `completed`.
 
 ### 1.2 Webhooks

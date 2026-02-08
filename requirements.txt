@@ -1,0 +1,12 @@
+pocketflow
+requests
+PyYAML
+pytest
+google-genai
+python-dotenv
+fastapi
+uvicorn[standard]
+httpx
+pydantic
+streamlit
+GitPython
