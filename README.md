@@ -1,6 +1,56 @@
 # Code-IQ
 
-Generate a structured tutorial (index, chapters, Mermaid diagram) from a GitHub repo or local directory. See [docs/design.md](docs/design.md) for flow and node design.
+Generate a structured tutorial (index, chapters, Mermaid diagram) from a GitHub repo or local directory. Aimed at developer onboarding: point at a codebase and get an auto-generated guide to its core abstractions, relationships, and how they work together.
+
+**Input:** GitHub repository URL or local directory; optional project name and language.  
+**Output:** A project-named directory with `index.md` (summary + relationship diagram + chapter links) and one Markdown chapter per core abstraction (`01_*.md`, `02_*.md`, …).
+
+---
+
+## Architecture
+
+Code-IQ is built on [Pocket Flow](https://github.com/The-Pocket/PocketFlow) (graph + shared store). Entry points:
+
+```mermaid
+flowchart LR
+    subgraph clients["Entry points"]
+        CLI[CLI]
+        API[FastAPI]
+        UI[Streamlit UI]
+    end
+    subgraph pipeline["Pipeline"]
+        shared[(Shared store)]
+    end
+    CLI --> pipeline
+    API --> pipeline
+    UI --> API
+```
+
+The pipeline is a linear workflow plus a batch step for chapters:
+
+```mermaid
+flowchart TD
+    A[FetchRepo] --> B[SummarizeFiles]
+    B --> C[IdentifyAbstractions]
+    C --> D[AnalyzeRelationships]
+    D --> E[OrderChapters]
+    E --> F[Batch: WriteChapters]
+    F --> G[CombineTutorial]
+```
+
+| Step | Description |
+|------|-------------|
+| **FetchRepo** | Crawl GitHub (API or clone fallback) or local directory; load source files into shared store. |
+| **SummarizeFiles** | For large codebases, summarize file set so the LLM can pick representative files; always keep README if present. |
+| **IdentifyAbstractions** | LLM identifies ~5–10 core abstractions, descriptions, and related file indices. |
+| **AnalyzeRelationships** | LLM produces project summary and relationship graph (from/to/label between abstractions). |
+| **OrderChapters** | LLM determines tutorial order (indices) by importance and dependencies. |
+| **WriteChapters** | BatchNode: for each abstraction in order, LLM writes one chapter (with prior chapters as context). |
+| **CombineTutorial** | Writes output dir: `index.md` (summary + Mermaid diagram + chapter links) and `01_*.md` … files. |
+
+Shared store schema and node contracts are in [docs/design.md](docs/design.md).
+
+---
 
 ## Requirements
 
@@ -16,6 +66,17 @@ python3.11 -m venv .venv   # or python3 -m venv .venv where python3 is 3.11+
 source .venv/bin/activate   # or .venv\Scripts\activate on Windows
 pip install -r requirements.txt
 ```
+
+### Docker
+
+Build and run the CLI in a container (pass env vars for LLM and optional `GITHUB_TOKEN`):
+
+```bash
+docker build -t code-iq .
+docker run --rm -e GEMINI_API_KEY="$GEMINI_API_KEY" -v "$(pwd)/out:/app/output" code-iq --repo-url https://github.com/owner/repo --output-dir /app/output
+```
+
+Use `--local-dir` by mounting a host directory and passing the path inside the container (e.g. `-v /path/on/host:/data` and `--local-dir /data`).
 
 ## Environment variables
 
@@ -60,6 +121,15 @@ The fallback mechanism ensures public repositories work even without authenticat
 export GITHUB_TOKEN=ghp_xxxx
 python main.py --repo-url https://github.com/owner/repo --output-dir ./out
 ```
+
+### File Processing
+
+For large codebases, Code-IQ intelligently filters files before analysis:
+
+- **`LLM_FILE_SUMMARY_CHUNK_SIZE`** (optional, default: 1000): Number of files processed per chunk during summarization
+- **`LLM_FILE_SUMMARY_MAX_FILES`** (optional, default: 400): Maximum number of representative files to analyze for abstractions
+
+The system automatically selects the most representative files while ensuring README.md is always included if present.
 
 ## CLI usage
 
@@ -116,9 +186,30 @@ pytest tests/ -v
 python -m pytest tests/ -v
 ```
 
+## Repository structure
+
+| Path | Purpose |
+|------|---------|
+| `main.py` | CLI entrypoint; parses args, fills shared store, runs flow. |
+| `flow.py` | Defines Pocket Flow: `create_full_flow()`, `create_analysis_flow()`, `create_fetch_flow()`. |
+| `nodes.py` | All pipeline nodes: FetchRepo, SummarizeFiles, IdentifyAbstractions, AnalyzeRelationships, OrderChapters, WriteChapters, CombineTutorial. |
+| `shared_schema.py` | Shared store default keys and structure. |
+| `utils/` | `call_llm.py` (LLM backends), `crawl_github_files.py`, `crawl_local_files.py`, `context_helpers.py`. |
+| `api/` | FastAPI app, build/jobs/projects routes, runner, job/project stores, webhooks. |
+| `ui/` | Streamlit app for GitHub URL or zip upload and viewing/downloading results. |
+| `docs/` | Design doc, guide, post-MVP plan, edit scope, Jekyll-style docs. |
+
 ## API (post-MVP)
 
 A FastAPI server exposes sync and async build endpoints. Async jobs are stored in memory; jobs older than **24 hours** are removed (configurable via **`JOB_RETENTION_SECONDS`**).
+
+**API-related environment variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BUILD_TIMEOUT_SECONDS` | `300` | Max duration (seconds) for sync `POST /v1/build`; excess returns 413. |
+| `JOB_RETENTION_SECONDS` | `86400` (24 h) | Async jobs older than this are removed from the in-memory store. |
+| `WEBHOOK_SECRET` | — | Secret for HMAC-SHA256 signing of webhook payloads; set when using `webhook_url` on async jobs. |
 
 **Run the API:**
 
@@ -141,6 +232,13 @@ After running the pipeline:
 1. Run on one public GitHub repo and one local directory; verify the summary and chapter order in `index.md`.
 2. Optionally run with `--language spanish` (or another language) and confirm names, summary, and chapter content are coherent in that language.
 
+## Documentation
+
+- [docs/design.md](docs/design.md) — System design: flow, shared store, node steps, utilities.
+- [docs/post-mvp-plan.md](docs/post-mvp-plan.md) — API contract (sync/async, webhooks), UI scope, frontend tech.
+- [docs/edit-scope.md](docs/edit-scope.md) — Editing projects and regenerating after a job.
+- [ui/README.md](ui/README.md) — Running the Streamlit UI and configuration.
+
 ---
 
-This project uses [Pocket Flow](https://github.com/The-Pocket/PocketFlow). See [.cursorrules](.cursorrules) and [Agentic Coding Guidance](https://the-pocket.github.io/PocketFlow/guide.html) for development.
+This project uses [Pocket Flow](https://github.com/The-Pocket/PocketFlow). See [.cursor/rules/guide_for_pocketflow.mdc](.cursor/rules/guide_for_pocketflow.mdc) and [Agentic Coding Guidance](https://the-pocket.github.io/PocketFlow/guide.html) for development.
