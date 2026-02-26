@@ -319,7 +319,65 @@ def crawl_github_files(
         tree_data = tree_resp.json()
         stats["truncated"] = tree_data.get("truncated", False)
         tree = tree_data.get("tree") or []
-    
+
+        # Optimization: if no token is provided and the repo is large, or if we hit rate limits, 
+        # it's much faster to clone the repository than making hundreds of individual API calls.
+        if not token and len([item for item in tree if item.get("type") == "blob"]) > 10:
+            print(f"Large repository ({len(tree)} items) and no GITHUB_TOKEN provided. Switching to clone fallback for better performance.")
+            return _crawl_github_files_locally(
+                repo_url=repo_url,
+                max_file_size=max_file_size,
+                use_relative_paths=use_relative_paths,
+                include_patterns=include_patterns,
+                exclude_patterns=exclude_patterns,
+            )
+
+        for item in tree:
+            if item.get("type") != "blob":
+                continue
+            path = item.get("path", "")
+            size = item.get("size", 0)
+            if size > max_file_size:
+                stats["skipped_size"] += 1
+                continue
+            if _should_skip_path(path):
+                stats["skipped_pattern"] += 1
+                continue
+            if _excluded(path, include_patterns, exclude_patterns):
+                stats["skipped_pattern"] += 1
+                continue
+            sha = item.get("sha")
+            if not sha:
+                continue
+            blob_resp = _get_blob_with_retry(owner, repo, sha, headers, max_retries=3)
+            
+            # If we hit rate limit on a blob, trigger the fallback instead of waiting forever
+            if blob_resp.status_code == 403 and "rate limit" in (blob_resp.text or "").lower():
+                print("Rate limit hit during blob fetching. Switching to clone fallback.")
+                return _crawl_github_files_locally(
+                    repo_url=repo_url,
+                    max_file_size=max_file_size,
+                    use_relative_paths=use_relative_paths,
+                    include_patterns=include_patterns,
+                    exclude_patterns=exclude_patterns,
+                )
+
+            blob_resp.raise_for_status()
+            blob = blob_resp.json()
+            content_b64 = blob.get("content")
+            if not content_b64:
+                stats["skipped_decode"] += 1
+                continue
+            try:
+                raw = base64.b64decode(content_b64, validate=True)
+                content = raw.decode("utf-8", errors="strict")
+            except (ValueError, UnicodeDecodeError):
+                stats["skipped_decode"] += 1
+                continue
+            key = path if use_relative_paths else f"{owner}/{repo}/{path}"
+            files[key] = content
+            stats["files_count"] += 1
+
     except (requests.RequestException, requests.HTTPError) as e:
         # If API fails, try local cloning fallback for public repos
         print(f"GitHub API failed ({e}), attempting local clone fallback...")
@@ -342,45 +400,5 @@ def crawl_github_files(
                     response=getattr(e, 'response', None),
                 )
             raise e
-
-    for item in tree:
-        if item.get("type") != "blob":
-            continue
-        path = item.get("path", "")
-        size = item.get("size", 0)
-        if size > max_file_size:
-            stats["skipped_size"] += 1
-            continue
-        if _should_skip_path(path):
-            stats["skipped_pattern"] += 1
-            continue
-        if _excluded(path, include_patterns, exclude_patterns):
-            stats["skipped_pattern"] += 1
-            continue
-        sha = item.get("sha")
-        if not sha:
-            continue
-        blob_resp = _get_blob_with_retry(owner, repo, sha, headers, max_retries=3)
-        if blob_resp.status_code == 403 and "rate limit" in (blob_resp.text or "").lower():
-            raise requests.HTTPError(
-                "403 GitHub API rate limit exceeded. Set GITHUB_TOKEN for higher limits (see README).",
-                response=blob_resp,
-            )
-        blob_resp.raise_for_status()
-        blob = blob_resp.json()
-        content_b64 = blob.get("content")
-        encoding = blob.get("encoding", "utf-8")
-        if not content_b64:
-            stats["skipped_decode"] += 1
-            continue
-        try:
-            raw = base64.b64decode(content_b64, validate=True)
-            content = raw.decode("utf-8", errors="strict")
-        except (ValueError, UnicodeDecodeError):
-            stats["skipped_decode"] += 1
-            continue
-        key = path if use_relative_paths else f"{owner}/{repo}/{path}"
-        files[key] = content
-        stats["files_count"] += 1
 
     return {"files": files, "stats": stats}

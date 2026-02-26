@@ -39,18 +39,24 @@ def run_job(job_id: str) -> None:
     Updates job store: running -> completed (with result) or failed (with error).
     Webhook delivery is done in task 4.0.
     """
+    logger.info("Starting job execution for %s", job_id)
     rec = job_store.get_job_internal(job_id)
     if not rec:
         logger.warning("Job %s not found or expired", job_id)
         return
     if rec["status"] not in ("queued", "running"):
+        logger.info("Job %s status is %s, skipping", job_id, rec["status"])
         return
     inputs = rec.get("inputs") or {}
     job_store.update_status(job_id, "running")
+    logger.info("Updated job %s to running status", job_id)
     temp_dir = inputs.get("_temp_dir")  # cleanup after run (upload jobs)
     try:
+        logger.info("Building shared store for job %s...", job_id)
         shared = _inputs_to_shared(inputs)
+        logger.info("Starting flow execution for job %s (repo_url=%s, local_dir=%s)", job_id, shared.get("repo_url"), shared.get("local_dir"))
         _run_flow(shared)
+        logger.info("Flow execution completed for job %s", job_id)
         final_dir = shared.get("final_output_dir")
         summary = None
         rel = shared.get("relationships") or {}

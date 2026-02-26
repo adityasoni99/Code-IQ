@@ -5,6 +5,9 @@ Run with: uvicorn api.app:app --reload
 """
 
 from fastapi import FastAPI
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from api.routes.v1 import router as v1_router
 

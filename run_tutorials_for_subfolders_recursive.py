@@ -91,11 +91,11 @@ def process_parent(
     When resume is True, skips subdirs that already have output (index.md).
     When list_status is True, only prints DONE/PENDING for each leaf and does not run.
     When skip_failures is True, on pipeline failure log and continue; else return exit code.
+    After all subfolders are processed, runs the pipeline once for the current folder
+    (parent) so that files directly in that folder (and its tree) get a tutorial too.
     Returns 0 on success, non-zero on first failure (if not skipped).
     """
     subdirs = get_direct_subdirs(parent, skip_hidden)
-    if not subdirs:
-        return 0
 
     for subdir in subdirs:
         local_dir = subdir.resolve()
@@ -157,6 +157,46 @@ def process_parent(
             else:
                 print(f"Failed: {local_dir.name} (exit {ret.returncode})", file=sys.stderr)
                 return ret.returncode
+
+    # After all subfolders: run pipeline for the current folder (files directly in parent)
+    parent_output_base = output_dir.parent
+    current_done = is_completed(parent_output_base, parent.name)
+
+    if list_status:
+        status = "DONE   " if current_done else "PENDING"
+        print(f"  {status}  {output_dir}  <-  {parent} (current folder)")
+        return 0
+
+    if resume and current_done:
+        print(f"\nSkipping (already done): {parent} (current folder)  ->  {output_dir}")
+        return 0
+
+    cmd_current = [
+        sys.executable,
+        str(repo_root / "main.py"),
+        "--local-dir",
+        str(parent),
+        "--output-dir",
+        str(parent_output_base),
+    ]
+    if dry_run:
+        print("Would run (current folder):", " ".join(cmd_current))
+        return 0
+    nfiles_current = count_files_under(parent)
+    print(f"\n--- {parent.name} (current folder, files={nfiles_current}) ---")
+    ret = subprocess.run(cmd_current, cwd=str(repo_root))
+    if ret.returncode != 0:
+        if skip_failures:
+            print(
+                f"Warning: skipping after failure (exit {ret.returncode}): {parent} (current folder)",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Failed: {parent.name} (current folder) (exit {ret.returncode})",
+                file=sys.stderr,
+            )
+            return ret.returncode
 
     return 0
 
@@ -245,10 +285,6 @@ def main() -> int:
         output_dir = output_base / rel
 
         subdirs = get_direct_subdirs(parent, args.skip_hidden)
-        if not subdirs:
-            print(f"No subdirectories under {parent}, skipping.")
-            continue
-
         if args.list_status:
             print(f"Checkpoint status (output base: {output_dir})")
             print(f"  DONE   = has {CHECKPOINT_MARKER} (will skip with --resume)")
@@ -258,7 +294,10 @@ def main() -> int:
             print(f"Output base: {output_dir}")
             print(f"Resume: {args.resume} (skip completed)")
             print(f"File threshold: {args.file_threshold} (recurse if subfolder has more files and has subdirs)")
-            print(f"Subfolders ({len(subdirs)}): {[d.name for d in subdirs]}")
+            if subdirs:
+                print(f"Subfolders ({len(subdirs)}): {[d.name for d in subdirs]}")
+            else:
+                print("(No subfolders; will run for current folder only.)")
 
         ret = process_parent(
             parent,

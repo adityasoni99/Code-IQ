@@ -41,8 +41,6 @@ def _render_edit_screen() -> None:
             )
             r.raise_for_status()
             st.success("Saved.")
-            st.session_state["edit_summary"] = summary
-            st.session_state["edit_chapters"] = chapters_to_save
         except requests.RequestException as e:
             st.error(f"Save failed: {e}")
     if st.button("Regenerate (full)", key="regen"):
@@ -50,17 +48,13 @@ def _render_edit_screen() -> None:
             r = requests.post(f"{API_BASE}/v1/projects/{project_id}/regenerate", json={"scope": "full"}, timeout=10)
             r.raise_for_status()
             data = r.json()
-            st.success(f"Job {data['job_id']} queued. Polling…")
+            st.session_state["current_job_id"] = data["job_id"]
             st.session_state.pop("edit_project_id", None)
-            st.session_state.pop("edit_summary", None)
-            st.session_state.pop("edit_chapters", None)
-            _poll_and_show_result(data["job_id"])
+            st.rerun()
         except requests.RequestException as e:
             st.error(f"Regenerate failed: {e}")
     if st.button("Back to home", key="back_home"):
         st.session_state.pop("edit_project_id", None)
-        st.session_state.pop("edit_summary", None)
-        st.session_state.pop("edit_chapters", None)
         st.rerun()
 
 
@@ -107,17 +101,28 @@ def _poll_and_show_result(job_id: str) -> None:
                     st.session_state["edit_project_id"] = proj["project_id"]
                     st.session_state["edit_summary"] = proj.get("summary", "")
                     st.session_state["edit_chapters"] = proj.get("chapters", [])
+                    st.session_state.pop("current_job_id", None)
                     st.rerun()
                 except requests.RequestException as e:
                     st.error(f"Failed to create project: {e}")
+            
+            if st.button("Clear result", key=f"clear_{job_id}"):
+                st.session_state.pop("current_job_id", None)
+                st.rerun()
             return
         if status == "failed":
             status_placeholder.error("Job failed")
             progress_placeholder.empty()
             st.error("Error: " + (job.get("error") or "Unknown"))
+            if st.button("Clear", key=f"clear_failed_{job_id}"):
+                st.session_state.pop("current_job_id", None)
+                st.rerun()
             return
         time.sleep(1)
     status_placeholder.warning("Timed out waiting for job. Check the API or try again.")
+    if st.button("Clear", key=f"clear_timeout_{job_id}"):
+        st.session_state.pop("current_job_id", None)
+        st.rerun()
 
 
 def main():
@@ -164,8 +169,8 @@ def main():
                 return
             data = r.json()
             job_id = data["job_id"]
-            st.success(f"Job created: `{job_id}`. Polling for completion…")
-            _poll_and_show_result(job_id)
+            st.session_state["current_job_id"] = job_id
+            st.rerun()
 
     else:
         st.markdown(f"Upload a **zip** of your project (max **{MAX_UPLOAD_MB} MB**).")
@@ -202,8 +207,13 @@ def main():
                 return
             data = r.json()
             job_id = data["job_id"]
-            st.success(f"Job created: `{job_id}`. Polling for completion…")
-            _poll_and_show_result(job_id)
+            st.session_state["current_job_id"] = job_id
+            st.rerun()
+
+    # If a job is active, poll for it
+    if st.session_state.get("current_job_id"):
+        st.divider()
+        _poll_and_show_result(st.session_state["current_job_id"])
 
 
 if __name__ == "__main__":

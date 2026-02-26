@@ -42,4 +42,5 @@ def create_full_flow() -> Flow:
     write_chapters = WriteChapters()
     combine = CombineTutorial()
     fetch_repo >> summarize >> identify >> analyze >> order >> write_chapters >> combine
+    # fetch_repo >> identify >> analyze >> order >> write_chapters >> combine
     return Flow(start=fetch_repo)

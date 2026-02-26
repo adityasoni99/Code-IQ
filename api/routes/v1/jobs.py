@@ -7,7 +7,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from api import job_store
@@ -34,7 +34,7 @@ def _body_to_inputs(body: JobCreateRequest) -> dict:
 
 
 @router.post("/jobs", response_model=JobCreateResponse, status_code=201)
-def post_jobs(body: JobCreateRequest) -> JSONResponse:
+def post_jobs(body: JobCreateRequest, background_tasks: BackgroundTasks) -> JSONResponse:
     """
     Create an async job. Same inputs as POST /v1/build.
     Returns job_id; poll GET /v1/jobs/{id} for status.
@@ -47,11 +47,9 @@ def post_jobs(body: JobCreateRequest) -> JSONResponse:
     inputs = _body_to_inputs(body)
     webhook_url = body.webhook_url.strip() if body.webhook_url else None
     job_id = job_store.create_job(inputs, webhook_url=webhook_url)
-    # Run in background thread
-    import threading
-    t = threading.Thread(target=run_job, args=(job_id,))
-    t.daemon = True
-    t.start()
+    logger.info("Created job %s, scheduling background task", job_id)
+    # Schedule background task via FastAPI (more robust than raw threading)
+    background_tasks.add_task(run_job, job_id)
     return JSONResponse(
         content={"job_id": job_id, "status": "queued"},
         status_code=201,
@@ -65,6 +63,7 @@ def post_jobs_upload(
     project_name: str | None = Form(None),
     language: str = Form("english"),
     webhook_url: str | None = Form(None),
+    background_tasks: BackgroundTasks = None,
 ) -> JSONResponse:
     """
     Create an async job from an uploaded zip. Extracts to temp dir, runs pipeline with local_dir.
@@ -105,10 +104,8 @@ def post_jobs_upload(
     }
     webhook_url = (webhook_url or "").strip() or None
     job_id = job_store.create_job(inputs, webhook_url=webhook_url)
-    import threading
-    t = threading.Thread(target=run_job, args=(job_id,))
-    t.daemon = True
-    t.start()
+    logger.info("Created upload job %s, scheduling background task", job_id)
+    background_tasks.add_task(run_job, job_id)
     return JSONResponse(
         content={"job_id": job_id, "status": "queued"},
         status_code=201,
