@@ -47,4 +47,13 @@ def default_shared_store() -> dict:
         "chapter_order": [],
         "chapters": [],
         "final_output_dir": None,
+        "parent_dirs": [],
+        "file_threshold": 100,
+        "resume": True,
+        "skip_hidden": True,
+        "parallel_workers": 0,
+        "leaf_folders": [],
+        "completed_count": 0,
+        "completed_folders": [],
+        "master_index_path": None,
     }

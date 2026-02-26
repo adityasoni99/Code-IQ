@@ -56,6 +56,38 @@ def test_fetch_repo_prep_returns_dict_with_crawler_params():
     assert prep_res["use_relative_paths"] is True
 
 
+def test_fetch_repo_prep_params_empty_backward_compat():
+    """FetchRepo.prep with self.params={} (backward compat) reads from shared."""
+    shared = {"local_dir": "/tmp/code", "repo_url": None, "output_dir": "shared_out"}
+    node = FetchRepo()
+    node.params = {}
+    prep_res = node.prep(shared)
+    assert prep_res["local_dir"] == "/tmp/code"
+    assert prep_res["output_dir"] == "shared_out"
+
+
+def test_fetch_repo_prep_params_override():
+    """FetchRepo.prep with self.params override uses params values."""
+    shared = {"local_dir": "/tmp/code", "repo_url": None, "output_dir": "shared_out"}
+    node = FetchRepo()
+    node.params = {"local_dir": "/other", "output_dir": "custom_out"}
+    prep_res = node.prep(shared)
+    assert prep_res["local_dir"] == "/other"
+    assert prep_res["output_dir"] == "custom_out"
+    assert prep_res["project_name"] == "other"
+
+
+def test_fetch_repo_prep_params_mixed():
+    """FetchRepo.prep with mixed params/shared: params has local_dir, shared has output_dir."""
+    shared = {"repo_url": None, "output_dir": "shared_out"}
+    node = FetchRepo()
+    node.params = {"local_dir": "/path/to/proj"}
+    prep_res = node.prep(shared)
+    assert prep_res["local_dir"] == "/path/to/proj"
+    assert prep_res["output_dir"] == "shared_out"
+    assert prep_res["project_name"] == "proj"
+
+
 def test_fetch_repo_exec_local_calls_crawl_local_and_returns_files_list_and_name():
     """FetchRepo.exec with local_dir calls crawl_local_files and returns (files_list, project_name)."""
     shared = {"local_dir": "/tmp/proj", "repo_url": None}
@@ -352,6 +384,38 @@ def test_combine_tutorial_prep_builds_mermaid_and_index_content():
     assert "Flow" in prep_res["index_content"]
     assert len(prep_res["chapter_files"]) == 2
     assert prep_res["chapter_files"][0]["filename"].endswith(".md")
+
+
+def test_combine_tutorial_prep_params_empty_reads_from_shared():
+    """CombineTutorial.prep with empty params reads output_dir from shared."""
+    shared = {
+        "project_name": "p",
+        "relationships": {"summary": "", "details": []},
+        "chapter_order": [],
+        "abstractions": [],
+        "chapters": [],
+        "output_dir": "shared_out",
+    }
+    node = CombineTutorial()
+    node.params = {}
+    prep_res = node.prep(shared)
+    assert "shared_out" in prep_res["output_path"]
+
+
+def test_combine_tutorial_prep_params_override_output_dir():
+    """CombineTutorial.prep with self.params['output_dir'] uses params value."""
+    shared = {
+        "project_name": "p",
+        "relationships": {"summary": "", "details": []},
+        "chapter_order": [],
+        "abstractions": [],
+        "chapters": [],
+        "output_dir": "shared_out",
+    }
+    node = CombineTutorial()
+    node.params = {"output_dir": "batch_out"}
+    prep_res = node.prep(shared)
+    assert "batch_out" in prep_res["output_path"]
 
 
 def test_combine_tutorial_exec_creates_dir_and_writes_files(tmp_path):

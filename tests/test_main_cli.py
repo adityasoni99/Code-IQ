@@ -70,3 +70,54 @@ def test_main_returns_1_on_flow_exception():
         mock_flow.run.side_effect = RuntimeError("fail")
         exit_code = main(["--local-dir", "/tmp/x"])
     assert exit_code == 1
+
+
+def test_parse_args_parent_dirs_sets_shared():
+    """--parent-dirs /tmp/foo sets parent_dirs in shared when main runs."""
+    with patch("main.create_recursive_flow") as mock_create:
+        mock_flow = mock_create.return_value
+        exit_code = main(["--parent-dirs", "/tmp/foo"])
+    assert exit_code == 0
+    mock_create.assert_called_once()
+    shared = mock_flow.run.call_args[0][0]
+    assert shared["parent_dirs"] == ["/tmp/foo"]
+    assert shared.get("file_threshold", 100) == 100
+    assert shared.get("resume") is True
+
+
+def test_parse_args_parent_dirs_with_parallel_uses_parallel_flow():
+    """--parent-dirs with --parallel 3 selects create_parallel_recursive_flow."""
+    with patch("main.create_parallel_recursive_flow") as mock_parallel:
+        with patch("main.create_recursive_flow"):
+            mock_flow = mock_parallel.return_value
+            main(["--parent-dirs", "/tmp/foo", "--parallel", "3"])
+    mock_parallel.assert_called_once()
+    shared = mock_flow.run.call_args[0][0]
+    assert shared["parallel_workers"] == 3
+
+
+def test_parse_args_parent_dirs_without_parallel_uses_recursive_flow():
+    """--parent-dirs without --parallel uses create_recursive_flow (sequential)."""
+    with patch("main.create_recursive_flow") as mock_recursive:
+        with patch("main.create_parallel_recursive_flow"):
+            mock_flow = mock_recursive.return_value
+            main(["--parent-dirs", "/tmp/foo"])
+    mock_recursive.assert_called_once()
+    shared = mock_flow.run.call_args[0][0]
+    assert shared.get("parallel_workers", 0) == 0
+
+
+def test_parse_args_parent_dirs_and_repo_url_mutual_exclusion():
+    """--parent-dirs and --repo-url together raises error (exit 2)."""
+    with pytest.raises(SystemExit) as exc_info:
+        parse_args(["--parent-dirs", "/tmp/foo", "--repo-url", "https://github.com/o/r"])
+    assert exc_info.value.code == 2
+
+
+def test_parse_args_file_threshold():
+    """--file-threshold 50 sets file_threshold in shared."""
+    with patch("main.create_recursive_flow") as mock_create:
+        mock_flow = mock_create.return_value
+        main(["--parent-dirs", "/tmp/foo", "--file-threshold", "50"])
+    shared = mock_flow.run.call_args[0][0]
+    assert shared["file_threshold"] == 50

@@ -6,12 +6,19 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any
 
 import yaml
 from pocketflow import BatchNode, Node
 
 from utils.context_helpers import create_llm_context, get_content_for_indices
+from utils.dir_helpers import (
+    count_files_under,
+    get_direct_subdirs,
+    has_direct_subdirs,
+    is_completed,
+)
 
 logger = logging.getLogger("Code_IQ")
 from utils.crawl_github_files import crawl_github_files
@@ -133,6 +140,112 @@ def _derive_project_name(
     return "project"
 
 
+def _collect_leaf_folders(
+    parent: Path,
+    children_output_base: Path,
+    file_threshold: int,
+    skip_hidden: bool,
+    resume: bool,
+) -> list[dict[str, str]]:
+    """
+    Recursively collect leaf folder entries (local_dir, output_dir, project_name).
+    Emits leaves first, then the parent itself as the last entry (current-folder-last).
+    Skips completed folders when resume is True.
+    """
+    result: list[dict[str, str]] = []
+    subdirs = get_direct_subdirs(parent, skip_hidden)
+
+    for subdir in subdirs:
+        local_dir = subdir.resolve()
+        nfiles = count_files_under(local_dir)
+        has_subdirs_flag = has_direct_subdirs(local_dir, skip_hidden)
+
+        if nfiles > file_threshold and has_subdirs_flag:
+            next_output = children_output_base / subdir.name
+            result.extend(
+                _collect_leaf_folders(
+                    local_dir,
+                    next_output,
+                    file_threshold,
+                    skip_hidden,
+                    resume,
+                )
+            )
+        else:
+            if resume and is_completed(children_output_base, subdir.name):
+                continue
+            result.append({
+                "local_dir": str(local_dir),
+                "output_dir": str(children_output_base),
+                "project_name": subdir.name,
+            })
+
+    # Parent as current folder (last entry)
+    if resume and is_completed(children_output_base.parent, parent.name):
+        pass  # skip appending parent
+    else:
+        result.append({
+            "local_dir": str(parent.resolve()),
+            "output_dir": str(children_output_base.parent),
+            "project_name": parent.name,
+        })
+    return result
+
+
+class DiscoverLeafFolders(Node):
+    """
+    Discover leaf folders for recursive BatchFlow processing.
+
+    prep: Read parent_dirs, file_threshold, skip_hidden, resume, output_dir from shared.
+    exec: Recursive walk with threshold and checkpoint; emit leaves then parent-last per parent.
+    post: Write leaf_folders list to shared, return "default".
+    """
+
+    def prep(self, shared: dict) -> dict:
+        parent_dirs = shared.get("parent_dirs") or []
+        file_threshold = int(shared.get("file_threshold") or 100)
+        skip_hidden = shared.get("skip_hidden", True)
+        resume = shared.get("resume", True)
+        output_dir = (shared.get("output_dir") or "output").strip()
+        return {
+            "parent_dirs": parent_dirs,
+            "file_threshold": file_threshold,
+            "skip_hidden": skip_hidden,
+            "resume": resume,
+            "output_dir": output_dir,
+        }
+
+    def exec(self, prep_res: dict) -> list[dict[str, str]]:
+        parent_dirs = prep_res.get("parent_dirs") or []
+        file_threshold = prep_res.get("file_threshold", 100)
+        skip_hidden = prep_res.get("skip_hidden", True)
+        resume = prep_res.get("resume", True)
+        output_dir = Path(prep_res.get("output_dir", "output").strip())
+        result: list[dict[str, str]] = []
+        for parent_raw in parent_dirs:
+            parent = Path(parent_raw).resolve()
+            if not parent.is_dir():
+                logger.warning("DiscoverLeafFolders: skipping non-directory %s", parent)
+                continue
+            children_output_base = output_dir / parent.name
+            result.extend(
+                _collect_leaf_folders(
+                    parent,
+                    children_output_base,
+                    file_threshold,
+                    skip_hidden,
+                    resume,
+                )
+            )
+        return result
+
+    def post(
+        self, shared: dict, prep_res: dict, exec_res: list[dict[str, str]]
+    ) -> str:
+        shared["leaf_folders"] = exec_res
+        return "default"
+
+
 class FetchRepo(Node):
     """
     Fetch repository code from GitHub or local directory.
@@ -143,15 +256,18 @@ class FetchRepo(Node):
     """
 
     def prep(self, shared: dict) -> dict:
-        repo_url = shared.get("repo_url")
-        local_dir = shared.get("local_dir")
-        project_name = _derive_project_name(repo_url, local_dir, shared.get("project_name"))
+        repo_url = self.params.get("repo_url", shared.get("repo_url"))
+        local_dir = self.params.get("local_dir", shared.get("local_dir"))
+        output_dir = self.params.get("output_dir", shared.get("output_dir", "output"))
+        project_name = _derive_project_name(
+            repo_url, local_dir, self.params.get("project_name", shared.get("project_name"))
+        )
         return {
             "repo_url": repo_url,
             "local_dir": local_dir,
             "project_name": project_name,
             "github_token": shared.get("github_token"),
-            "output_dir": shared.get("output_dir", "output"),
+            "output_dir": output_dir,
             "include_patterns": shared.get("include_patterns") or set(),
             "exclude_patterns": shared.get("exclude_patterns") or set(),
             "max_file_size": shared.get("max_file_size", 100_000),
@@ -905,7 +1021,7 @@ class CombineTutorial(Node):
         abstractions = shared.get("abstractions") or []
         chapters = shared.get("chapters") or []
         repo_url = shared.get("repo_url") or ""
-        output_dir = (shared.get("output_dir") or "output").strip()
+        output_dir = (self.params.get("output_dir", shared.get("output_dir", "output")) or "output").strip()
         details = relationships.get("details") or []
         summary = relationships.get("summary") or ""
 
@@ -996,4 +1112,219 @@ class CombineTutorial(Node):
     def post(self, shared: dict, prep_res: dict, exec_res: str) -> str:
         shared["final_output_dir"] = exec_res
         logger.info("CombineTutorial: output_dir=%s", exec_res)
+        return "default"
+
+
+def _extract_mermaid_blocks(text: str) -> list[str]:
+    """Extract all ```mermaid ... ``` blocks from markdown text."""
+    pattern = r"```mermaid\s*\n(.*?)\n```"
+    return re.findall(pattern, text, re.DOTALL)
+
+
+def _extract_first_paragraph(text: str) -> str:
+    """Extract first non-empty paragraph (strip markdown headers)."""
+    lines = text.strip().split("\n")
+    for line in lines:
+        line = line.strip()
+        if line.startswith("#"):
+            continue
+        if line:
+            return line[:500]
+    return ""
+
+
+def _build_output_tree(output_dir: Path) -> list[dict]:
+    """Walk output_dir, find all index.md; return flat list of {path, rel_path, name, content, mermaid, summary}."""
+    result = []
+    output_dir = Path(output_dir).resolve()
+    if not output_dir.exists():
+        return result
+    for d in output_dir.rglob("*"):
+        if not d.is_dir():
+            continue
+        index_md = d / "index.md"
+        if not index_md.is_file():
+            continue
+        try:
+            content = index_md.read_text(encoding="utf-8")
+        except Exception:
+            content = ""
+        mermaid_blocks = _extract_mermaid_blocks(content)
+        mermaid = mermaid_blocks[0] if mermaid_blocks else ""
+        summary = _extract_first_paragraph(content)
+        try:
+            rel = d.relative_to(output_dir)
+        except ValueError:
+            rel = d.name
+        rel_path = str(rel).replace("\\", "/")
+        name = d.name
+        result.append({
+            "path": str(d),
+            "rel_path": rel_path,
+            "name": name,
+            "content": content,
+            "mermaid": mermaid,
+            "summary": summary,
+        })
+    return sorted(result, key=lambda x: x["rel_path"])
+
+
+def _flat_tree_to_nested(flat: list[dict]) -> list[dict]:
+    """Convert flat list of nodes (by rel_path) into nested tree with children."""
+    by_rel = {n["rel_path"]: n for n in flat}
+    for node in flat:
+        rel = node["rel_path"]
+        node["slug"] = rel.replace("/", "_")
+        node["children"] = []
+    for node in flat:
+        rel = node["rel_path"]
+        if "/" in rel:
+            prefix = rel.rsplit("/", 1)[0]
+            parent = by_rel.get(prefix)
+            if parent is not None:
+                parent["children"].append(node)
+    return [n for n in flat if "/" not in n["rel_path"]]
+
+
+class GenerateHierarchicalView(Node):
+    """
+    Build tree.json, master_index.md, and self-contained master_index.html from output tree.
+    Single HTML with TREE/PAGES/DIAGRAMS JSON, marked.js + mermaid.js, sidebar + breadcrumb.
+    """
+
+    def prep(self, shared: dict) -> dict:
+        output_dir = shared.get("output_dir", "output")
+        out_path = Path(output_dir).resolve()
+        flat = _build_output_tree(out_path)
+        nested = _flat_tree_to_nested(flat)
+        pages = {n["slug"]: n["content"] for n in flat}
+        diagrams = {n["slug"]: n["mermaid"] for n in flat}
+        return {
+            "output_dir": output_dir,
+            "output_tree": nested,
+            "flat": flat,
+            "pages": pages,
+            "diagrams": diagrams,
+        }
+
+    def exec(self, prep_res: dict) -> dict:
+        import json as _json
+        tree = prep_res.get("output_tree") or []
+        flat = prep_res.get("flat") or []
+        pages = prep_res.get("pages") or {}
+        diagrams = prep_res.get("diagrams") or {}
+        # tree.json (for programmatic use)
+        def to_serializable(n):
+            return {
+                "name": n["name"],
+                "slug": n.get("slug", n["rel_path"].replace("/", "_")),
+                "path": n["rel_path"],
+                "mermaid": n.get("mermaid", ""),
+                "summary": n.get("summary", ""),
+                "children": [to_serializable(c) for c in n.get("children", [])],
+            }
+        tree_json = [to_serializable(n) for n in tree]
+        tree_json_str = _json.dumps(tree_json, indent=2)
+        # master_index.md: Mermaid subgraphs with click links
+        md_lines = ["# Master Tutorial Index\n"]
+        for n in flat:
+            slug = n.get("slug", n["rel_path"].replace("/", "_"))
+            md_lines.append(f"- [{n['name']}]({n['rel_path']}/index.md)\n")
+        master_md = "\n".join(md_lines)
+        if flat:
+            md_lines = ["# Master Tutorial Index\n", "```mermaid", "flowchart LR"]
+            for n in flat:
+                slug = n.get("slug", n["rel_path"].replace("/", "_"))
+                safe = slug.replace('"', "'")
+                md_lines.append(f'    {safe}["{n["name"]}"]')
+            md_lines.append("```")
+            master_md = "\n".join(md_lines)
+        # master_index.html: self-contained SPA
+        pages_escaped = _json.dumps(pages).replace("<", "\\u003c").replace(">", "\\u003e")
+        diagrams_escaped = _json.dumps(diagrams).replace("<", "\\u003c").replace(">", "\\u003e")
+        tree_escaped = _json.dumps(tree_json).replace("<", "\\u003c").replace(">", "\\u003e")
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Master Tutorial Index</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <style>
+    body {{ font-family: sans-serif; margin: 0; display: flex; min-height: 100vh; }}
+    #sidebar {{ width: 240px; background: #f5f5f5; padding: 1rem; overflow-y: auto; }}
+    #sidebar ul {{ list-style: none; padding-left: 1rem; }}
+    #sidebar a {{ color: #0366d6; text-decoration: none; }}
+    #sidebar a:hover {{ text-decoration: underline; }}
+    #content {{ flex: 1; padding: 1rem 2rem; overflow-y: auto; }}
+    #breadcrumb {{ margin-bottom: 1rem; color: #666; }}
+    #breadcrumb a {{ color: #0366d6; }}
+  </style>
+</head>
+<body>
+  <nav id="sidebar"><ul id="tree-nav"></ul></nav>
+  <main>
+    <div id="breadcrumb"></div>
+    <div id="content"></div>
+  </main>
+  <script>
+    var TREE = {tree_escaped};
+    var PAGES = {pages_escaped};
+    var DIAGRAMS = {diagrams_escaped};
+    function renderNav(children, ul) {{
+      if (!ul) ul = document.createElement("ul");
+      ul.innerHTML = "";
+      (children || []).forEach(function(n) {{
+        var li = document.createElement("li");
+        var a = document.createElement("a");
+        a.href = "#" + n.slug;
+        a.textContent = n.name;
+        a.onclick = function(e) {{ e.preventDefault(); location.hash = n.slug; render(); }};
+        li.appendChild(a);
+        if (n.children && n.children.length) {{
+          var sub = renderNav(n.children, null);
+          li.appendChild(sub);
+        }}
+        ul.appendChild(li);
+      }});
+      return ul;
+    }}
+    function render() {{
+      var slug = (location.hash || "#").slice(1) || (TREE[0] && TREE[0].slug);
+      if (!slug && TREE.length) slug = TREE[0].slug;
+      document.getElementById("tree-nav").innerHTML = "";
+      var rootUl = document.createElement("ul");
+      renderNav(TREE, rootUl);
+      document.getElementById("tree-nav").appendChild(rootUl);
+      var content = document.getElementById("content");
+      var breadcrumb = document.getElementById("breadcrumb");
+      if (PAGES[slug]) {{
+        content.innerHTML = marked.parse(PAGES[slug]);
+        content.querySelectorAll("code.language-mermaid").forEach(function(el) {{
+          el.classList.add("mermaid");
+          if (el.parentNode) el.parentNode.classList.add("mermaid");
+        }});
+        if (typeof mermaid !== "undefined" && mermaid.run)
+          mermaid.run({{ nodes: content.querySelectorAll(".mermaid") }});
+      }} else {{
+        content.innerHTML = "<p>Select a tutorial from the sidebar.</p>";
+      }}
+      breadcrumb.innerHTML = "<a href=\"#\">Home</a> &rarr; " + (slug || "");
+    }}
+    window.onhashchange = render;
+    document.addEventListener("DOMContentLoaded", render);
+  </script>
+</body>
+</html>"""
+        return {"md": master_md, "html": html, "tree_json": tree_json_str}
+
+    def post(self, shared: dict, prep_res: dict, exec_res: dict) -> str:
+        output_dir = prep_res.get("output_dir", "output")
+        out_path = Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+        (out_path / "master_index.md").write_text(exec_res.get("md") or "", encoding="utf-8")
+        (out_path / "master_index.html").write_text(exec_res.get("html") or "", encoding="utf-8")
+        (out_path / "tree.json").write_text(exec_res.get("tree_json") or "[]", encoding="utf-8")
+        master_path = out_path / "master_index.html"
+        shared["master_index_path"] = str(master_path)
         return "default"

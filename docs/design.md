@@ -107,7 +107,7 @@ shared = {
     *   *Purpose*: Download repo (GitHub) or read local directory; load source files into shared store.
     *   *Type*: Regular
     *   *Steps*:
-        *   `prep`: Read `repo_url`, `local_dir`, `project_name`, `github_token`, `output_dir`, `include_patterns`, `exclude_patterns`, `max_file_size` from shared. Derive `project_name` from repo/dir if missing.
+        *   `prep`: Read `repo_url`, `local_dir`, `output_dir`, `project_name` from **`self.params` first** (for BatchFlow), then shared. Derive `project_name` from repo/dir if missing. Read `github_token`, `include_patterns`, `exclude_patterns`, `max_file_size` from shared.
         *   `exec`: Call `crawl_github_files(...)` or `crawl_local_files(...)`; convert result to list of `(path, content)` tuples.
         *   `post`: Write `files` and `all_files` (same list) and `project_name` to shared store.
 
@@ -155,6 +155,106 @@ shared = {
     *   *Purpose*: Write output directory: index.md (summary, Mermaid diagram, chapter links) and chapter .md files. Fixed text (e.g. attribution) in English.
     *   *Type*: Regular
     *   *Steps*:
-        *   `prep`: Read `project_name`, `relationships`, `chapter_order`, `abstractions`, `chapters`, `repo_url`, `output_dir`. Build Mermaid flowchart from `relationships["details"]`; build index.md body and list of {filename, content} for chapters (with attribution footer).
+        *   `prep`: Read `project_name`, `relationships`, `chapter_order`, `abstractions`, `chapters`, `repo_url`, `output_dir` (from `self.params` first, then shared). Build Mermaid flowchart from `relationships["details"]`; build index.md body and list of {filename, content} for chapters (with attribution footer).
         *   `exec`: Create output dir; write index.md; write each chapter file.
         *   `post`: Set `shared["final_output_dir"]`; log completion.
+
+---
+
+## Recursive / Multi-Folder Flow
+
+When `--parent-dirs` is used, the pipeline runs an **outer flow** that discovers leaf folders, runs the full tutorial pipeline per folder (via **SubfolderBatchFlow** or **ParallelSubfolderFlow**), then builds a **hierarchical view** (master index + self-contained HTML).
+
+### Architecture
+
+```mermaid
+flowchart TD
+    subgraph outerFlow ["Recursive Flow"]
+        Discover["DiscoverLeafFolders"]
+        subgraph batchFlow ["SubfolderBatchFlow or ParallelSubfolderFlow"]
+            subgraph innerPipeline ["Inner pipeline per folder"]
+                Fetch[FetchRepo] --> Summarize[SummarizeFiles]
+                Summarize --> Identify[IdentifyAbstractions]
+                Identify --> Analyze[AnalyzeRelationships]
+                Analyze --> Order[OrderChapters]
+                Order --> Write["WriteChapters BatchNode"]
+                Write --> Combine[CombineTutorial]
+            end
+        end
+        HierView["GenerateHierarchicalView"]
+        Discover --> batchFlow
+        batchFlow --> HierView
+    end
+```
+
+### DiscoverLeafFolders
+
+*   *Purpose*: Produce the list of leaf folders (and parent-as-last) for batch processing.
+*   *Type*: Regular
+*   *Steps*:
+    *   `prep`: Read `parent_dirs`, `file_threshold`, `skip_hidden`, `resume`, `output_dir` from shared.
+    *   `exec`: For each parent dir, recursively walk: if a subdir has `count_files_under > file_threshold` and `has_direct_subdirs`, recurse; else treat as leaf. Append `{local_dir, output_dir, project_name}`. After all subfolders, append the parent itself as the **last** entry (current-folder-last). When `resume` is true, skip folders where `output_dir/project_name/index.md` exists.
+    *   `post`: Write `shared["leaf_folders"]`; return `"default"`.
+
+### SubfolderBatchFlow and ParallelSubfolderFlow
+
+*   **SubfolderBatchFlow** (default): PocketFlow **BatchFlow** that runs the inner pipeline once per leaf folder, sequentially. Each run receives one element of `leaf_folders` as `self.params` (so `FetchRepo` and `CombineTutorial` read `local_dir`, `output_dir`, `project_name` from `self.params` first). *Rationale*: We need a full flow per folder, not a single BatchNode; BatchFlow is the correct fit. AsyncParallelBatchFlow is not used because of shared-store collision and sync nodes.
+*   **ParallelSubfolderFlow**: Custom Flow that runs the inner pipeline per folder in a **ThreadPoolExecutor** with **isolated** shared stores per run. Global config keys are copied into each run; per-folder params override. *Rationale*: Bounded concurrency respects rate limits; threads release GIL during I/O; isolation avoids store corruption.
+
+### GenerateHierarchicalView
+
+*   *Purpose*: Build a single master index (Markdown + self-contained HTML) from the output tree of all generated tutorials.
+*   *Type*: Regular
+*   *Steps*:
+    *   `prep`: Walk `output_dir` to find all `index.md` files; extract Mermaid blocks and first-paragraph summary per folder; build nested tree structure (`output_tree`, `flat`, `pages`, `diagrams`).
+    *   `exec`: Build `tree.json` (hierarchy for programmatic use); build `master_index.md` (Mermaid/links); build `master_index.html` (self-contained SPA with TREE, PAGES, DIAGRAMS embedded, marked.js + mermaid.js via CDN, sidebar, content area, breadcrumb, hash-based routing).
+    *   `post`: Write `master_index.md`, `master_index.html`, `tree.json` under `output_dir`; set `shared["master_index_path"]`.
+
+### Master HTML viewer
+
+The master HTML viewer is a **single self-contained HTML file** that embeds all markdown pages and diagram data as JSON, uses **marked.js** and **mermaid.js** from CDN for rendering, and provides a **sidebar** (folder tree) and **hash-based SPA routing** so no server is required. Users open `master_index.html` in a browser and navigate via the sidebar or links.
+
+### Shared store (recursive keys)
+
+When using `--parent-dirs`, the shared store additionally uses:
+
+*   `parent_dirs`: list of parent directory paths
+*   `file_threshold`: int (default 100) for recursion
+*   `resume`: bool (default True) for checkpoint skip
+*   `skip_hidden`: bool (default True) to ignore dot-prefixed dirs
+*   `parallel_workers`: int (0 = sequential, else N threads)
+*   `leaf_folders`: list of `{local_dir, output_dir, project_name}` (output of DiscoverLeafFolders)
+*   `completed_count`: number of folders processed (SubfolderBatchFlow)
+*   `completed_folders`: list of `final_output_dir` paths (ParallelSubfolderFlow)
+*   `master_index_path`: path to generated `master_index.html` (GenerateHierarchicalView)
+
+`FetchRepo` and `CombineTutorial` read `repo_url`, `local_dir`, `output_dir`, `project_name` from **`self.params` first** (set by BatchFlow/ParallelSubfolderFlow), falling back to shared for backward compatibility.
+
+---
+
+## Utility Functions (additional)
+
+*   **`context_helpers`** (`utils/context_helpers.py`): `create_llm_context`, `get_content_for_indices` — build LLM context from files and abstraction indices. Used by IdentifyAbstractions, AnalyzeRelationships, WriteChapters.
+*   **`dir_helpers`** (`utils/dir_helpers.py`): `count_files_under`, `has_direct_subdirs`, `get_direct_subdirs`, `is_completed` — used by DiscoverLeafFolders and (legacy) recursive script.
+
+---
+
+## PocketFlow features: used vs available
+
+| Feature | Used | Notes |
+|--------|------|-------|
+| Node | Yes | All pipeline steps |
+| BatchNode | Yes | WriteChapters |
+| Flow | Yes | Single-folder and recursive outer flow |
+| BatchFlow | Yes | SubfolderBatchFlow (sequential per folder) |
+| AsyncFlow / AsyncParallelBatchFlow | No | Sync nodes; shared-store collision in parallel |
+| Custom parallel | Yes | ParallelSubfolderFlow with ThreadPoolExecutor + isolated shared |
+
+---
+
+## Reliability
+
+*   **Retry**: Node base supports `max_retries` and `wait`; failures surface after retries.
+*   **YAML fallback**: Nodes use `_try_parse_list` / `_extract_yaml_block` and JSON fallback when YAML fails.
+*   **Reformat prompt**: Used where LLM output must be normalized (e.g. chapter heading).
+*   **Checkpoint/resume**: With `resume=True`, DiscoverLeafFolders skips folders that already have `index.md`.

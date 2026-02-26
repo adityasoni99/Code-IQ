@@ -1,9 +1,15 @@
 """Integration tests: minimal flow run, shared store populated."""
 
+from pathlib import Path
 from unittest.mock import patch
 
 from shared_schema import default_shared_store
-from flow import create_analysis_flow, create_fetch_flow, create_full_flow
+from flow import (
+    create_analysis_flow,
+    create_fetch_flow,
+    create_full_flow,
+    create_recursive_flow,
+)
 
 
 def test_minimal_flow_runs_and_populates_shared_with_local_dir():
@@ -153,3 +159,68 @@ relationships:
     assert len(chapter_mds) >= 2, f"expected at least 2 chapter files, got {chapter_mds}"
     assert chapter_mds[0].name.startswith("01_"), "first chapter should be 01_*.md"
     assert chapter_mds[1].name.startswith("02_"), "second chapter should be 02_*.md"
+
+
+def test_create_recursive_flow_integration(tmp_path):
+    """create_recursive_flow: temp dir with 2 subfolders, mock call_llm; verify index.md per folder and master_index.html."""
+    (tmp_path / "sub1").mkdir()
+    (tmp_path / "sub2").mkdir()
+    (tmp_path / "sub1" / "f1.txt").write_text("x")
+    (tmp_path / "sub2" / "f2.txt").write_text("y")
+    out_base = tmp_path / "out"
+    shared = default_shared_store()
+    shared["parent_dirs"] = [str(tmp_path)]
+    shared["output_dir"] = str(out_base)
+    shared["file_threshold"] = 100
+    shared["resume"] = True
+    shared["skip_hidden"] = True
+
+    def fake_call_llm(prompt: str, use_cache: bool = True) -> str:
+        if "best order to explain" in prompt or "tutorial for" in prompt:
+            return '```yaml\n- "0 # Node"\n- "1 # Flow"\n```'
+        if "from_abstraction" in prompt or "to_abstraction" in prompt or "EVERY abstraction" in prompt:
+            return """```yaml
+summary: A pipeline.
+relationships:
+  - from_abstraction: "0 # Node"
+    to_abstraction: "1 # Flow"
+    label: runs
+```"""
+        if "beginner-friendly tutorial chapter" in prompt or ("Chapter" in prompt and "Relevant Code" in prompt):
+            return "# Chapter\n\nThis chapter explains the concept."
+        if "representative file paths" in prompt or "summarize the area" in prompt:
+            return """```yaml
+summary: Test files
+files: [a.py, b.py]
+```"""
+        if "most representative" in prompt and "candidate file list" in prompt:
+            return "- a.py\n- b.py"
+        return """```yaml
+- name: Node
+  description: A step.
+  file_indices: [0]
+- name: Flow
+  description: Orchestrator.
+  file_indices: [1]
+```"""
+
+    with patch("nodes.crawl_local_files") as mock_crawl:
+        def crawl_side_effect(directory, **kwargs):
+            base = Path(directory)
+            files = {}
+            for f in base.rglob("*"):
+                if f.is_file():
+                    rel = str(f.relative_to(base))
+                    files[rel] = f.read_text()
+            return {"files": files}
+        mock_crawl.side_effect = crawl_side_effect
+        with patch("nodes.call_llm", side_effect=fake_call_llm):
+            flow = create_recursive_flow()
+            flow.run(shared)
+
+    assert shared.get("completed_count") == 3
+    assert (out_base / tmp_path.name / "sub1" / "index.md").exists()
+    assert (out_base / tmp_path.name / "sub2" / "index.md").exists()
+    assert (out_base / tmp_path.name / "index.md").exists()
+    assert (out_base / "master_index.html").exists()
+    assert shared.get("master_index_path")
