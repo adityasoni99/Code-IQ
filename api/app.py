@@ -1,7 +1,9 @@
 """
 FastAPI application for Code-IQ (post-MVP API).
 
-Run with: uvicorn api.app:app --reload
+Run with:
+  uvicorn api.app:app --reload --reload-exclude '.cache' --reload-exclude 'output'
+Excluding .cache and output prevents reloads when cloning repos or writing tutorials.
 """
 
 import os

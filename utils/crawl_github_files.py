@@ -10,6 +10,7 @@ import os
 import re
 import tempfile
 import time
+from pathlib import Path
 from typing import Set
 
 import git
@@ -71,6 +72,35 @@ SKIP_EXTS = {
     ".otf",
     ".ds_store",
 }
+
+
+def _clone_cache_base() -> Path:
+    """
+    Return a writable base directory for git clone temp dirs.
+    Prefer CKB_CLONE_CACHE_DIR, then .cache/ckb-clones under project root
+    (derived from this file), then ~/.cache/codebase-knowledge-builder/clones.
+    Avoids system temp dirs that can cause "Operation not permitted" when git
+    writes .git/config (e.g. in sandboxed environments).
+    """
+    env_base = os.environ.get("CKB_CLONE_CACHE_DIR")
+    if env_base:
+        base = Path(env_base).expanduser().resolve()
+    else:
+        # Use project root (parent of utils/) so cwd doesn't affect path
+        project_root = Path(__file__).resolve().parent.parent
+        project_cache = project_root / ".cache" / "ckb-clones"
+        try:
+            project_cache.mkdir(parents=True, exist_ok=True)
+            if os.access(project_cache, os.W_OK):
+                base = project_cache.resolve()
+            else:
+                raise OSError("project cache not writable")
+        except OSError:
+            base = Path.home() / ".cache" / "codebase-knowledge-builder" / "clones"
+            base.mkdir(parents=True, exist_ok=True)
+            base = base.resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    return base
 
 
 def _parse_repo_url(repo_url: str) -> tuple:
@@ -205,10 +235,17 @@ def _crawl_github_files_locally(
         "truncated": False,
     }
     
-    with tempfile.TemporaryDirectory() as tmpdir:
+    clone_base = _clone_cache_base()
+    with tempfile.TemporaryDirectory(prefix="repo_", dir=str(clone_base)) as tmpdir:
         try:
-            print(f"Cloning {repo_url} to temporary directory...")
-            repo = git.Repo.clone_from(repo_url, tmpdir, depth=1)  # Shallow clone
+            print(f"Cloning {repo_url} to {tmpdir!r}...")
+            # Force git to use this writable dir for config/temp so we avoid
+            # "Operation not permitted" in system temp (e.g. sandboxed envs)
+            env = os.environ.copy()
+            env["TMPDIR"] = env["TEMP"] = env["TMP"] = tmpdir
+            repo = git.Repo.clone_from(
+                repo_url, tmpdir, depth=1, env=env
+            )  # Shallow clone
         except Exception as e:
             raise ValueError(f"Failed to clone repository: {e}")
         

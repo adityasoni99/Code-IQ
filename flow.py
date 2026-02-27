@@ -125,7 +125,7 @@ class ParallelSubfolderFlow(Flow):
                         completed_count[0] += 1
                         try:
                             from api import job_store
-                            job_store.update_progress(job_id, completed_count[0], total, project_name or "")
+                            job_store.update_progress(job_id, completed=completed_count[0], total=total, current_folder=project_name or "")
                         except Exception as e:
                             logger.warning("Progress update failed: %s", e)
                 except Exception as e:

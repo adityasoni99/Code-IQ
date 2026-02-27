@@ -122,6 +122,12 @@ export GITHUB_TOKEN=ghp_xxxx
 python main.py --repo-url https://github.com/owner/repo --output-dir ./out
 ```
 
+### Tutorial browser (web app)
+
+When running the API and web app, the **Tutorials** page lists tutorial folders from a configurable output directory:
+
+- **`OUTPUT_DIR`** (optional, default: `out`): Directory scanned for tutorial subfolders (each must contain `index.md`). Set this to the same path you use for `--output-dir` (or a custom location) so the web app can browse existing tutorials.
+
 ### File Processing
 
 For large codebases, Code-IQ intelligently filters files before analysis:
@@ -214,8 +220,9 @@ A FastAPI server exposes sync and async build endpoints. Async jobs are stored i
 **Run the API:**
 
 ```bash
-uv run uvicorn api.app:app --reload
+uv run uvicorn api.app:app --reload --reload-exclude '.cache' --reload-exclude 'output'
 # Default: http://localhost:8000
+# Excluding .cache and output avoids reloads when cloning repos or writing tutorials.
 # POST /v1/build (sync), POST /v1/jobs (async), GET /v1/jobs/{id}, GET /v1/jobs/{id}/result
 ```
 

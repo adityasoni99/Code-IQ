@@ -280,7 +280,7 @@ def test_get_job_includes_progress_and_mode(client):
         "mode": "recursive",
         "parent_dirs": ["/tmp/p"],
     })
-    job_store.update_progress(job_id, 2, 5, "current_folder_name")
+    job_store.update_progress(job_id, completed=2, total=5, current_folder="current_folder_name")
     resp = client.get(f"/v1/jobs/{job_id}")
     assert resp.status_code == 200
     data = resp.json()

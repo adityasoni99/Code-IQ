@@ -4,6 +4,8 @@ import { AppLayout } from './components/layout/AppLayout'
 import { HomePage } from './pages/HomePage'
 import { JobStatusPage } from './pages/JobStatusPage'
 import { ViewerPage } from './pages/ViewerPage'
+import { TutorialsPage } from './pages/TutorialsPage'
+import { TutorialViewPage } from './pages/TutorialViewPage'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -18,6 +20,8 @@ function App() {
         <Routes>
           <Route element={<AppLayout />}>
             <Route index element={<HomePage />} />
+            <Route path="tutorials" element={<TutorialsPage />} />
+            <Route path="tutorials/:slug/view" element={<TutorialViewPage />} />
             <Route path="jobs/:id" element={<JobStatusPage />} />
             <Route path="jobs/:id/view" element={<ViewerPage />} />
           </Route>

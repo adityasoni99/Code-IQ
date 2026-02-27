@@ -9,6 +9,7 @@ export function AppLayout() {
         </Link>
         <nav className="flex gap-4 text-sm">
           <Link to="/" className="text-slate-600 hover:text-slate-900">New Job</Link>
+          <Link to="/tutorials" className="text-slate-600 hover:text-slate-900">Tutorials</Link>
         </nav>
       </header>
       <main className="flex-1 p-4">

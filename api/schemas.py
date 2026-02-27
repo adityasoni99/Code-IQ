@@ -57,7 +57,7 @@ class JobResponse(BaseModel):
     updated_at: float
     result: dict | None = None
     error: str | None = None
-    progress: dict | None = None  # {"completed": int, "total": int, "current_folder": str}
+    progress: dict | None = None  # step, total_steps, step_name, detail (single); completed, total, current_folder (recursive)
     mode: str = "single"  # "single" | "recursive"
 
 

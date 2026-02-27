@@ -5,7 +5,17 @@ export interface Job {
   updated_at: number
   result?: { final_output_dir?: string; summary?: string } | null
   error?: string | null
-  progress?: { completed: number; total: number; current_folder: string } | null
+  progress?: {
+    step?: number
+    total_steps?: number
+    step_current?: number
+    step_total?: number
+    step_name?: string
+    detail?: string
+    completed?: number
+    total?: number
+    current_folder?: string
+  } | null
   mode: 'single' | 'recursive'
 }
 

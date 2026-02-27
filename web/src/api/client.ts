@@ -62,3 +62,28 @@ export async function getJobFile(jobId: string, path: string): Promise<string> {
 export function jobResultZipUrl(jobId: string): string {
   return `${API_BASE}/v1/jobs/${jobId}/result`
 }
+
+export interface TutorialListItem {
+  name: string
+  slug: string
+  hasIndex: boolean
+}
+
+export interface TutorialsConfig {
+  output_dir: string
+}
+
+export async function getTutorialsConfig(): Promise<TutorialsConfig> {
+  return fetchApi<TutorialsConfig>('/v1/tutorials/config')
+}
+
+export async function listTutorials(): Promise<TutorialListItem[]> {
+  return fetchApi<TutorialListItem[]>('/v1/tutorials')
+}
+
+export async function getTutorialFile(tutorialPath: string): Promise<string> {
+  const encoded = tutorialPath.split('/').map(encodeURIComponent).join('/')
+  const res = await fetch(`${API_BASE}/v1/tutorials/${encoded}`)
+  if (!res.ok) throw new Error(await res.text() || res.statusText)
+  return res.text()
+}

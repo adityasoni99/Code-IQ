@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 from pocketflow import BatchNode, Node
 
+from api import job_store
 from utils.context_helpers import create_llm_context, get_content_for_indices
 from utils.dir_helpers import (
     count_files_under,
@@ -138,6 +139,28 @@ def _derive_project_name(
     if local_dir and str(local_dir).strip():
         return os.path.basename(os.path.abspath(str(local_dir).strip())) or "project"
     return "project"
+
+
+PIPELINE_TOTAL_STEPS = 7
+
+
+def _report_progress(
+    shared: dict,
+    step: int,
+    step_name: str,
+    detail: str = "",
+) -> None:
+    """Report pipeline step progress to job store when job_id is present (e.g. API jobs)."""
+    job_id = shared.get("job_id")
+    if not job_id:
+        return
+    job_store.update_progress(
+        job_id,
+        step=step,
+        total_steps=PIPELINE_TOTAL_STEPS,
+        step_name=step_name,
+        detail=detail,
+    )
 
 
 def _collect_leaf_folders(
@@ -274,7 +297,7 @@ class UpdateJobProgress(Node):
             shared["_progress_completed"] = completed
             total = prep_res.get("total_folders", 0)
             current_folder = prep_res.get("project_name", "") or ""
-            job_store.update_progress(job_id, completed, total, current_folder)
+            job_store.update_progress(job_id, completed=completed, total=total, current_folder=current_folder)
         except Exception as e:
             logger.warning("UpdateJobProgress failed: %s", e)
         return "default"
@@ -354,6 +377,7 @@ class FetchRepo(Node):
         shared["all_files"] = files_list
         shared["project_name"] = project_name
         logger.info("FetchRepo: files=%s, project_name=%s", len(files_list), project_name)
+        _report_progress(shared, 1, "Fetching repository", f"Found {len(files_list)} files in {project_name}")
         return "default"
 
 
@@ -451,6 +475,7 @@ class SummarizeFiles(Node):
         shared["files"] = filtered
         shared["file_summary"] = exec_res.get("summary") or ""
         logger.info("SummarizeFiles: selected_files=%s (from %s)", len(filtered), len(files))
+        _report_progress(shared, 2, "Analyzing files", f"Selected {len(filtered)} representative files")
         return "default"
 
 
@@ -587,7 +612,8 @@ Format the output as a YAML list of dictionaries:
         return abstractions
 
     def post(self, shared: dict, prep_res: dict, exec_res: list[dict]) -> str:
-        shared["abstractions"] = exec_res # List of {"name": str, "description": str, "files": [int]}
+        shared["abstractions"] = exec_res  # List of {"name": str, "description": str, "files": [int]}
+        _report_progress(shared, 3, "Identifying abstractions", f"Found {len(exec_res)} abstractions")
         return "default"
 
 
@@ -743,6 +769,8 @@ Now, provide the YAML output:
         # Structure is now {"summary": str, "details": [{"from": int, "to": int, "label": str}]}
         # Summary and label might be translated if language is not English
         shared["relationships"] = exec_res
+        details = exec_res.get("details") or []
+        _report_progress(shared, 4, "Analyzing relationships", f"Mapped {len(details)} relationships")
         return "default"
 
 
@@ -851,6 +879,7 @@ Now, provide the YAML output:
 
     def post(self, shared: dict, prep_res: dict, exec_res: list[int]) -> str:
         shared["chapter_order"] = exec_res
+        _report_progress(shared, 5, "Planning chapters", f"Planned {len(exec_res)} chapters")
         return "default"
 
 
@@ -934,6 +963,8 @@ class WriteChapters(BatchNode):
                 "language": language,
                 "project_name": project_name,
                 "use_cache": use_cache,
+                "job_id": shared.get("job_id"),
+                "total_chapters": len(chapter_order),
             })
         logger.info("Prepared %s chapters for writing...", len(items))
         return items
@@ -949,7 +980,19 @@ class WriteChapters(BatchNode):
         project_name = item.get("project_name") or "project"
         num = item.get("chapter_number") or 1
         use_cache = item.get("use_cache", True)
+        total_chapters = item.get("total_chapters") or 1
+        job_id = item.get("job_id")
 
+        if job_id:
+            job_store.update_progress(
+                job_id,
+                step=6,
+                total_steps=PIPELINE_TOTAL_STEPS,
+                step_current=num,
+                step_total=total_chapters,
+                step_name="Writing chapters",
+                detail=f"Writing chapter {num}/{total_chapters}: {name}",
+            )
         logger.info("Writing chapter %s: %s", num, name)
         
         # Get summary of chapters written *before* this one
@@ -1039,6 +1082,7 @@ Now, directly provide a super beginner-friendly Markdown output (DON'T need ```m
         shared["chapters"] = exec_res_list
         self.chapters_written_so_far = []
         logger.info("Written all %s chapters.", len(exec_res_list))
+        _report_progress(shared, 6, "Writing chapters", f"Wrote {len(exec_res_list)} chapters")
         return "default"
 
 
@@ -1146,6 +1190,7 @@ class CombineTutorial(Node):
     def post(self, shared: dict, prep_res: dict, exec_res: str) -> str:
         shared["final_output_dir"] = exec_res
         logger.info("CombineTutorial: output_dir=%s", exec_res)
+        _report_progress(shared, 7, "Building tutorial", "Tutorial ready")
         return "default"
 
 
