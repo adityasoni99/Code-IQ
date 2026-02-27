@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import time
+from pathlib import Path
 from typing import Any
 
 from api import job_store
@@ -23,13 +24,26 @@ def _inputs_to_shared(inputs: dict[str, Any]) -> dict[str, Any]:
     shared["output_dir"] = (inputs.get("output_dir") or "output").strip()
     shared["language"] = (inputs.get("language") or "english").strip()
     shared["github_token"] = inputs.get("github_token") or os.environ.get("GITHUB_TOKEN")
+    mode = (inputs.get("mode") or "single").strip()
+    if mode == "recursive":
+        shared["parent_dirs"] = list(inputs.get("parent_dirs") or [])
+        shared["file_threshold"] = int(inputs.get("file_threshold") or 100)
+        shared["resume"] = bool(inputs.get("resume", True))
+        shared["parallel_workers"] = int(inputs.get("parallel") or inputs.get("parallel_workers") or 0)
     return shared
 
 
-def _run_flow(shared: dict[str, Any]) -> None:
-    from flow import create_full_flow
+def _run_flow(shared: dict[str, Any], mode: str = "single") -> None:
+    from flow import create_full_flow, create_parallel_recursive_flow, create_recursive_flow
 
-    flow = create_full_flow()
+    if mode == "recursive":
+        parallel = shared.get("parallel_workers") or 0
+        if parallel > 0:
+            flow = create_parallel_recursive_flow()
+        else:
+            flow = create_recursive_flow()
+    else:
+        flow = create_full_flow()
     flow.run(shared)
 
 
@@ -51,13 +65,17 @@ def run_job(job_id: str) -> None:
     job_store.update_status(job_id, "running")
     logger.info("Updated job %s to running status", job_id)
     temp_dir = inputs.get("_temp_dir")  # cleanup after run (upload jobs)
+    mode = (inputs.get("mode") or "single").strip()
     try:
         logger.info("Building shared store for job %s...", job_id)
         shared = _inputs_to_shared(inputs)
-        logger.info("Starting flow execution for job %s (repo_url=%s, local_dir=%s)", job_id, shared.get("repo_url"), shared.get("local_dir"))
-        _run_flow(shared)
+        shared["job_id"] = job_id
+        logger.info("Starting flow execution for job %s (mode=%s, repo_url=%s, local_dir=%s)", job_id, mode, shared.get("repo_url"), shared.get("local_dir"))
+        _run_flow(shared, mode)
         logger.info("Flow execution completed for job %s", job_id)
         final_dir = shared.get("final_output_dir")
+        if mode == "recursive" and shared.get("master_index_path"):
+            final_dir = str(Path(shared["master_index_path"]).parent)
         summary = None
         rel = shared.get("relationships") or {}
         if isinstance(rel, dict):

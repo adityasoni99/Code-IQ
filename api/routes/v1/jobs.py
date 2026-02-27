@@ -8,11 +8,11 @@ import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from api import job_store
 from api.runner import run_job
-from api.schemas import JobCreateRequest, JobCreateResponse, JobResponse
+from api.schemas import JobCreateRequest, JobCreateResponse, JobResponse, RecursiveJobRequest
 
 logger = logging.getLogger("codebase_knowledge_builder.api")
 
@@ -113,6 +113,40 @@ def post_jobs_upload(
     )
 
 
+@router.post("/jobs/recursive", response_model=JobCreateResponse, status_code=201)
+def post_jobs_recursive(body: RecursiveJobRequest, background_tasks: BackgroundTasks) -> JSONResponse:
+    """
+    Create an async recursive job. Processes multiple parent directories;
+    poll GET /v1/jobs/{id} for status and progress.
+    """
+    if not body.parent_dirs or not [d for d in body.parent_dirs if (d or "").strip()]:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide at least one parent_dirs path.",
+        )
+    inputs = {
+        "mode": "recursive",
+        "parent_dirs": [p.strip() for p in body.parent_dirs if p and p.strip()],
+        "file_threshold": body.file_threshold,
+        "parallel": body.parallel,
+        "resume": body.resume,
+        "output_dir": (body.output_dir or "output").strip(),
+        "language": (body.language or "english").strip(),
+        "github_token": body.github_token.strip() if body.github_token else None,
+        "repo_url": None,
+        "local_dir": None,
+        "project_name": None,
+    }
+    job_id = job_store.create_job(inputs, webhook_url=None)
+    logger.info("Created recursive job %s, scheduling background task", job_id)
+    background_tasks.add_task(run_job, job_id)
+    return JSONResponse(
+        content={"job_id": job_id, "status": "queued"},
+        status_code=201,
+        headers={"Location": f"/v1/jobs/{job_id}"},
+    )
+
+
 @router.get("/jobs/{job_id}", response_model=JobResponse)
 def get_job(job_id: str) -> JobResponse:
     """Get job status. 404 if unknown or expired."""
@@ -135,6 +169,88 @@ def _zip_directory(path: str) -> io.BytesIO:
                 zf.write(f, arcname)
     buf.seek(0)
     return buf
+
+
+@router.get("/jobs/{job_id}/tree")
+def get_job_tree(job_id: str):
+    """
+    Return tree.json content for the job's output. For recursive jobs returns the
+    hierarchy; for single jobs returns a single-entry tree. 404 if not found or not completed.
+    """
+    rec = job_store.get_job(job_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Job not found or expired.")
+    if rec.get("status") != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail="Job not completed. Poll GET /v1/jobs/{id}.",
+        )
+    result = rec.get("result") or {}
+    final_dir = result.get("final_output_dir")
+    if not final_dir or not Path(final_dir).is_dir():
+        raise HTTPException(status_code=404, detail="Result directory not available.")
+    tree_path = Path(final_dir) / "tree.json"
+    if tree_path.is_file():
+        import json
+        return JSONResponse(content=json.loads(tree_path.read_text(encoding="utf-8")))
+    # Single-mode fallback: build single-entry tree from result (final_dir is project dir)
+    project_name = Path(final_dir).name or "tutorial"
+    slug = project_name
+    single_tree = [{"name": project_name, "slug": slug, "path": final_dir, "children": []}]
+    return JSONResponse(content=single_tree)
+
+
+def _safe_relative_path(base: Path, requested: str) -> Path:
+    """Resolve path ensuring no traversal outside base. Raises HTTPException if invalid."""
+    requested = (requested or "").strip().lstrip("/")
+    if not requested:
+        raise HTTPException(status_code=400, detail="File path is required.")
+    # Normalize and reject any segment that is ".."
+    parts = requested.replace("\\", "/").split("/")
+    if ".." in parts:
+        raise HTTPException(status_code=400, detail="Path traversal not allowed.")
+    resolved = (base / requested).resolve()
+    try:
+        resolved.relative_to(base.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Path traversal not allowed.")
+    return resolved
+
+
+_CONTENT_TYPES = {
+    ".md": "text/markdown",
+    ".html": "text/html",
+    ".json": "application/json",
+    ".txt": "text/plain",
+    ".css": "text/css",
+    ".js": "application/javascript",
+}
+
+
+@router.get("/jobs/{job_id}/files/{file_path:path}")
+def get_job_file(job_id: str, file_path: str):
+    """
+    Serve a file from the job's output directory by relative path.
+    Path traversal (..) is not allowed. Content-Type inferred from extension.
+    """
+    rec = job_store.get_job(job_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Job not found or expired.")
+    if rec.get("status") != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail="Job not completed. Poll GET /v1/jobs/{id}.",
+        )
+    result = rec.get("result") or {}
+    final_dir = result.get("final_output_dir")
+    if not final_dir or not Path(final_dir).is_dir():
+        raise HTTPException(status_code=404, detail="Result directory not available.")
+    base = Path(final_dir)
+    path = _safe_relative_path(base, file_path)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found.")
+    content_type = _CONTENT_TYPES.get(path.suffix, "application/octet-stream")
+    return FileResponse(path, media_type=content_type, filename=path.name)
 
 
 @router.get("/jobs/{job_id}/result")

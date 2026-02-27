@@ -1,5 +1,7 @@
 # Code-IQ — UI (Streamlit)
 
+> **Deprecation notice:** This Streamlit UI is maintained for backward compatibility. For the full experience (GitHub URL, upload zip, **recursive jobs**, hierarchical tree navigation, inline Mermaid diagrams, and tutorial viewer), use the **React UI** in [`web/`](../web/). Run the API (`uv run uvicorn api.app:app --reload`), then from `web/` run `npm run dev` and open http://localhost:5173.
+
 Phase 1: **link** (GitHub URL) or **upload** (zip), view-only result (summary + download zip). Uses the **async API** (POST /v1/jobs or POST /v1/jobs/upload, poll GET /v1/jobs/{id}). Max upload **50 MB**.
 
 ## Prerequisites

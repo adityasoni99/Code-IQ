@@ -45,6 +45,23 @@ def update_status(
         _store[job_id]["error"] = error
 
 
+def update_progress(
+    job_id: str,
+    completed: int,
+    total: int,
+    current_folder: str = "",
+) -> None:
+    """Update job progress (for recursive jobs)."""
+    if job_id not in _store:
+        return
+    _store[job_id]["updated_at"] = time.time()
+    _store[job_id]["progress"] = {
+        "completed": completed,
+        "total": total,
+        "current_folder": current_folder,
+    }
+
+
 def get_job(job_id: str) -> dict[str, Any] | None:
     """Return job record for API response (no webhook_url, no inputs). None if missing or expired."""
     _cleanup_expired()
@@ -62,6 +79,8 @@ def get_job(job_id: str) -> dict[str, Any] | None:
         "updated_at": rec["updated_at"],
         "result": rec.get("result"),
         "error": rec.get("error"),
+        "progress": rec.get("progress"),
+        "mode": rec.get("inputs", {}).get("mode", "single"),
     }
 
 

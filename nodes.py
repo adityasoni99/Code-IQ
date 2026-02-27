@@ -243,6 +243,40 @@ class DiscoverLeafFolders(Node):
         self, shared: dict, prep_res: dict, exec_res: list[dict[str, str]]
     ) -> str:
         shared["leaf_folders"] = exec_res
+        shared["total_folders"] = len(exec_res)
+        return "default"
+
+
+class UpdateJobProgress(Node):
+    """
+    Updates job progress in the job store after each folder (recursive batch).
+    Reads job_id, total_folders, _progress_completed from shared; increments and writes progress.
+    """
+
+    def prep(self, shared: dict) -> dict:
+        return {
+            "job_id": shared.get("job_id"),
+            "total_folders": shared.get("total_folders", 0),
+            "project_name": shared.get("project_name", ""),
+        }
+
+    def exec(self, prep_res: dict) -> None:
+        return None
+
+    def post(self, shared: dict, prep_res: dict, exec_res: None) -> str:
+        job_id = prep_res.get("job_id")
+        if not job_id:
+            return "default"
+        try:
+            from api import job_store
+
+            completed = shared.get("_progress_completed", 0) + 1
+            shared["_progress_completed"] = completed
+            total = prep_res.get("total_folders", 0)
+            current_folder = prep_res.get("project_name", "") or ""
+            job_store.update_progress(job_id, completed, total, current_folder)
+        except Exception as e:
+            logger.warning("UpdateJobProgress failed: %s", e)
         return "default"
 
 
